@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8"/>
+  <title>BIP-44 na nuvem</title>
+  <style>
+      body {
+        font-family: sans-serif;
+        margin: 40px;
+        background: #111;
+        color: #0f0;
+      }
+      pre {
+        overflow: auto;
+        background: #222;
+        padding: 12px;
+        height: 400px;
+        white-space: pre-wrap;
+      }
+      button {
+        background: #0f0;
+        border: 0;
+        padding: 8px 14px;
+        color: #000;
+        font-weight: bold;
+        margin-right: 10px;
+      }
+      #status {
+        display: inline-block;
+        margin-left: 10px;
+        font-weight: bold;
+        color: #0f0;
+      }
+      .spinner {
+        display: inline-block;
+        width: 14px;
+        height: 14px;
+        border: 2px solid #0f0;
+        border-top: 2px solid transparent;
+        border-radius: 50%;
+        animation: spin 0.8s linear infinite;
+        margin-right: 8px;
+      }
+      @keyframes spin {
+        from { transform: rotate(0deg); }
+        to { transform: rotate(360deg); }
+      }
+  </style>
+</head>
+<body>
+<h1>Busca por Wallets BIP-44 COM SALDO</h1>
+<button id="start">COMEÇAR</button>
+<button id="stop" disabled>PARAR</button>
+<span id="status"></span>
+<pre id="log"></pre>
+
+<!-- bibliotecas -->
+<script src="https://cdn.jsdelivr.net/npm/axios@1.6.7/dist/axios.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bip39@3.1.0/dist/bip39.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/bitcoinjs-lib@6.1.5/dist/bitcoinjs-lib.min.js"></script>
+
+<script>
+/* -------- Config -------- */
+const OUTFILE = 'wallets_com_saldo.json';
+
+/* -------- Derivador BIP44 -------- */
+function derivaEnderecos(mnemonic) {
+  const seed = bip39.mnemonicToSeedSync(mnemonic);
+  const root = bitcoinjs.bip32.fromSeed(seed, bitcoinjs.networks.bitcoin);
+  const addrs = [];
+
+  for (let i = 0; i < 5; i++) {
+    const child = root.derivePath(`m/44'/0'/0'/0/${i}`);
+    const { address } = bitcoinjs.payments.p2pkh({
+      pubkey: child.publicKey,
+      network: bitcoinjs.networks.bitcoin
+    });
+    addrs.push(address);
+  }
+
+  return addrs;
+}
+
+/* -------- Consulta Saldo -------- */
+async function consultaSaldo(enderecos) {
+  let total = 0;
+  for (const addr of enderecos) {
+    try {
+      const url = `https://blockstream.info/api/address/${addr}`;
+      const res = await axios.get(url);
+      const data = res.data;
+      const saldo = (data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum) / 1e8;
+      total += saldo;
+    } catch (e) {
+      console.warn('Erro ao consultar', addr, e.message);
+    }
+  }
+  return total;
+}
+
+/* -------- Interface -------- */
+let ativo = false;
+const logElem = document.getElementById('log');
+const startBtn = document.getElementById('start');
+const stopBtn = document.getElementById('stop');
+const statusElem = document.getElementById('status');
+
+function log(txt) {
+  logElem.textContent += txt + '\n';
+  logElem.scrollTop = logElem.scrollHeight;
+}
+
+function showSpinner(active) {
+  if (active) {
+    statusElem.innerHTML = '<span class="spinner"></span>Buscando wallets...';
+  } else {
+    statusElem.innerHTML = '';
+  }
+}
+
+/* -------- Loop Principal -------- */
+startBtn.onclick = async () => {
+  ativo = true;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  log('=== Iniciando busca ===');
+  showSpinner(true);
+
+  while (ativo) {
+    const palavras = Math.random() < 0.5 ? 12 : 24;
+    const mnemonic = bip39.generateMnemonic(palavras === 12 ? 128 : 256);
+    const enderecos = derivaEnderecos(mnemonic);
+
+    log(`🔍 Testando seed (${palavras} palavras): ${mnemonic}`);
+    log('Endereços derivados:');
+    enderecos.forEach(addr => log('  → ' + addr));
+
+    const saldo = await consultaSaldo(enderecos);
+    const registro = { mnemonic, enderecos, saldo };
+
+    log(`Saldo total: ${saldo} BTC`);
+    log('----------------------------------');
+
+    if (saldo > 0) {
+      const blob = new Blob([JSON.stringify(registro, null, 2)], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = OUTFILE;
+      a.click();
+      log('💰 Wallet COM SALDO salva localmente!');
+    }
+
+    await new Promise(r => setTimeout(r, 500)); // pausa entre ciclos
+  }
+
+  showSpinner(false);
+};
+
+stopBtn.onclick = () => {
+  ativo = false;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  showSpinner(false);
+  log('=== Parado ===');
+};
+</script>
+</body>
+</html>
