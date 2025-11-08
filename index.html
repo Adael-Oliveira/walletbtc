@@ -2,242 +2,178 @@
 <html>
 <head>
   <meta charset="utf-8"/>
-  <title>BIP-39 / BIP-44 — Scanner</title>
+  <title>BIP-39 / BIP-44 — Scanner (funcional)</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <style>
-      body {
-        font-family: sans-serif;
-        margin: 24px;
-        background: #0b0b0b;
-        color: #0f0;
-      }
-      h1 { margin-bottom: 8px; }
-      .controls { margin-bottom: 12px; }
-      pre {
-        overflow: auto;
-        background: #151515;
-        padding: 12px;
-        height: 420px;
-        white-space: pre-wrap;
-        border-radius: 6px;
-      }
-      button {
-        background: #0f0;
-        border: 0;
-        padding: 8px 14px;
-        color: #000;
-        font-weight: bold;
-        margin-right: 10px;
-        cursor: pointer;
-      }
-      #status {
-        display: inline-block;
-        margin-left: 10px;
-        font-weight: bold;
-        color: #0f0;
-      }
-      .spinner {
-        display: inline-block;
-        width: 14px;
-        height: 14px;
-        border: 2px solid #0f0;
-        border-top: 2px solid transparent;
-        border-radius: 50%;
-        animation: spin 0.8s linear infinite;
-        margin-right: 8px;
-        vertical-align: middle;
-      }
-      @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-
-      .stats { margin-top: 8px; color: #9f9; font-size: 14px; }
-      .addr-ok { color: #6f6; }
-      .addr-err { color: #f66; }
+    body{font-family:sans-serif;margin:20px;background:#0b0b0b;color:#0f0}
+    h1{margin:0 0 12px 0}
+    .controls{margin-bottom:12px}
+    pre{overflow:auto;background:#151515;padding:12px;height:420px;white-space:pre-wrap;border-radius:6px}
+    button{background:#0f0;border:0;padding:8px 14px;color:#000;font-weight:bold;margin-right:10px;cursor:pointer}
+    #status{display:inline-block;margin-left:10px;font-weight:bold;color:#0f0}
+    .spinner{display:inline-block;width:14px;height:14px;border:2px solid #0f0;border-top:2px solid transparent;border-radius:50%;animation:spin .8s linear infinite;margin-right:8px;vertical-align:middle}
+    @keyframes spin{from{transform:rotate(0)}to{transform:rotate(360deg)}}
+    .stats{margin-top:8px;color:#9f9;font-size:14px}
   </style>
 </head>
 <body>
-<h1>Busca por Wallets BIP-39 / BIP-44</h1>
+  <h1>Busca por Wallets BIP-39 / BIP-44</h1>
 
-<div class="controls">
-  <button id="start">COMEÇAR</button>
-  <button id="stop" disabled>PARAR</button>
-  <span id="status"></span>
-  <div class="stats" id="counters">
-    Seeds testadas: 0 · Endereços verificados: 0 · Wallets com saldo: 0
+  <div class="controls">
+    <button id="start">COMEÇAR</button>
+    <button id="stop" disabled>PARAR</button>
+    <span id="status"></span>
+    <div class="stats" id="counters">Seeds testadas: 0 · Endereços verificados: 0 · Wallets com saldo: 0</div>
   </div>
-</div>
 
-<pre id="log"></pre>
+  <pre id="log"></pre>
 
-<!-- libs -->
-<script src="https://cdn.jsdelivr.net/npm/axios@1.6.7/dist/axios.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/bip39@3.1.0/dist/bip39.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/bitcoinjs-lib@6.1.5/dist/bitcoinjs-lib.min.js"></script>
+  <!-- libs (import na ordem correta) -->
+  <script src="https://cdn.jsdelivr.net/npm/axios@1.6.7/dist/axios.min.js"></script>
+  <!-- bip39 browser bundle conhecido que expõe window.bip39 -->
+  <script src="https://unpkg.com/bip39@3.0.4/browser/bip39.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/bitcoinjs-lib@6.1.5/dist/bitcoinjs-lib.min.js"></script>
 
-<script>
-/* -------- Config -------- */
-const OUTFILE = 'wallets_com_saldo.json';
-const logElem = document.getElementById('log');
-const startBtn = document.getElementById('start');
-const stopBtn = document.getElementById('stop');
-const statusElem = document.getElementById('status');
-const countersElem = document.getElementById('counters');
+  <script>
+  // --------- Helpers UI ----------
+  const logElem = document.getElementById('log');
+  const startBtn = document.getElementById('start');
+  const stopBtn  = document.getElementById('stop');
+  const statusElem = document.getElementById('status');
+  const countersElem = document.getElementById('counters');
 
-let ativo = false;
-let seedsTestadas = 0;
-let enderecosVerificados = 0;
-let walletsComSaldo = 0;
+  function log(txt=''){ logElem.textContent += txt + '\\n'; logElem.scrollTop = logElem.scrollHeight; }
+  function showSpinner(on){ statusElem.innerHTML = on? '<span class="spinner"></span>Buscando wallets...':''; }
 
-function log(txt = '') {
-  logElem.textContent += txt + '\\n';
-  logElem.scrollTop = logElem.scrollHeight;
-}
-function updateCounters() {
-  countersElem.textContent = `Seeds testadas: ${seedsTestadas} · Endereços verificados: ${enderecosVerificados} · Wallets com saldo: ${walletsComSaldo}`;
-}
-function showSpinner(active) {
-  if (active) statusElem.innerHTML = '<span class="spinner"></span>Buscando wallets...';
-  else statusElem.innerHTML = '';
-}
+  // --------- Guard checks (garante libs carregadas) ----------
+  if(!window.axios){ log('✖ axios não carregado. Verifique sua conexão.'); throw new Error('axios not loaded'); }
+  if(!window.bip39){ log('✖ bip39 não carregado. Verifique a conexão (CDN).'); throw new Error('bip39 not loaded'); }
+  if(!window.bitcoinjs){ log('✖ bitcoinjs-lib não carregado. Verifique a conexão (CDN).'); throw new Error('bitcoinjs not loaded'); }
 
-/* -------- Derivador e info extra -------- */
-function derivaEnderecosComPub(mnemonic) {
-  const seed = bip39.mnemonicToSeedSync(mnemonic); // Buffer
-  const root = bitcoinjs.bip32.fromSeed(seed, bitcoinjs.networks.bitcoin);
+  const axiosLib = window.axios;
+  const bip39Lib  = window.bip39;
+  const bitcoinjs = window.bitcoinjs;
 
-  // xpub do nó neutered (geralmente m ou m/44'/0'/0' conforme uso)
-  const xpub = root.neutered().toBase58();
+  // --------- Config e contadores ----------
+  const OUTFILE = 'wallets_com_saldo.json';
+  let ativo=false, seedsTestadas=0, enderecosVerificados=0, walletsComSaldo=0;
+  function updateCounters(){ countersElem.textContent = `Seeds testadas: ${seedsTestadas} · Endereços verificados: ${enderecosVerificados} · Wallets com saldo: ${walletsComSaldo}`; }
 
-  const addrs = [];
-  for (let i = 0; i < 5; i++) {
-    const child = root.derivePath(`m/44'/0'/0'/0/${i}`);
-    const { address } = bitcoinjs.payments.p2pkh({
-      pubkey: child.publicKey,
-      network: bitcoinjs.networks.bitcoin
-    });
-    const pubHex = child.publicKey.toString('hex');
-    addrs.push({ index: i, address, pubHex });
-  }
+  // --------- Derivador: BIP-39 -> BIP-32 -> BIP-44 (m/44'/0'/0'/0/i) ----------
+  function derivaEnderecosComPub(mnemonic, count=5) {
+    // mnemonic -> seed
+    const seed = bip39Lib.mnemonicToSeedSync(mnemonic); // Buffer
+    const root = bitcoinjs.bip32.fromSeed(seed, bitcoinjs.networks.bitcoin);
+    // neutered xpub do root (pode trocar para m/44'/0'/0' se preferir)
+    const xpub = root.neutered().toBase58();
 
-  return {
-    seedHex: seed.toString('hex'),
-    xpub,
-    addrs
-  };
-}
-
-/* -------- Consulta por endereço (retorna balance por endereço) -------- */
-async function consultaSaldosPorEndereco(addrs) {
-  const results = {};
-  for (const item of addrs) {
-    const addr = item.address;
-    try {
-      // Blockstream API
-      const url = `https://blockstream.info/api/address/${addr}`;
-      const res = await axios.get(url);
-      const data = res.data;
-      const balance = (data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum) / 1e8;
-      results[addr] = { balance, success: true };
-      enderecosVerificados++;
-      updateCounters();
-    } catch (e) {
-      // registra erro mas continua
-      results[addr] = { balance: 0, success: false, error: e.message || String(e) };
-      enderecosVerificados++;
-      updateCounters();
-      log(`⚠️ Erro ao consultar ${addr} : ${e.message || e}`);
+    const addrs = [];
+    for(let i=0;i<count;i++){
+      const child = root.derivePath(`m/44'/0'/0'/0/${i}`);
+      const { address } = bitcoinjs.payments.p2pkh({ pubkey: child.publicKey, network: bitcoinjs.networks.bitcoin });
+      addrs.push({ index: i, address, pubHex: child.publicKey.toString('hex') });
     }
-    // pequena pausa para reduzir chance de rate-limit
-    await new Promise(r => setTimeout(r, 150));
+
+    return { seedHex: seed.toString('hex'), xpub, addrs };
   }
-  return results;
-}
 
-/* -------- Loop principal -------- */
-startBtn.onclick = async () => {
-  ativo = true;
-  startBtn.disabled = true;
-  stopBtn.disabled = false;
-  showSpinner(true);
-  log('=== Iniciando busca ===');
-
-  while (ativo) {
-    try {
-      const palavras = Math.random() < 0.5 ? 12 : 24;
-      const mnemonic = bip39.generateMnemonic(palavras === 12 ? 128 : 256);
-
-      // contadores
-      seedsTestadas++;
-      updateCounters();
-
-      // derivação + info
-      const deriv = derivaEnderecosComPub(mnemonic);
-
-      // log imediato (sempre deve aparecer)
-      log(`🔍 Seed (${palavras} palavras): ${mnemonic}`);
-      log(`Seed HEX (BIP-39 seed): ${deriv.seedHex}`);
-      log(`xpub (root neutered): ${deriv.xpub}`);
-      log('Endereços e pubkeys derivados:');
-      deriv.addrs.forEach(a => log(`  [${a.index}] ${a.address}  pub: ${a.pubHex}`));
-
-      // consulta saldos por endereço
-      const saldos = await consultaSaldosPorEndereco(deriv.addrs);
-
-      // sumariza e mostra checagem por chave
-      let total = 0;
-      log('--- Verificação por endereço ---');
-      deriv.addrs.forEach(a => {
-        const r = saldos[a.address];
-        if (r && r.success) {
-          const line = `  → ${a.address}  saldo: ${r.balance} BTC`;
-          log(line);
-          total += r.balance;
-          if (r.balance > 0) {
-            log(`    ✅ >>> Endereço com saldo: ${r.balance} BTC`);
-          }
-        } else {
-          log(`  → ${a.address}  (falha consulta)`);
-        }
-      });
-      log(`Saldo total desta seed: ${total} BTC`);
-      log('----------------------------------');
-
-      if (total > 0) {
-        walletsComSaldo++;
-        updateCounters();
-        const registro = {
-          mnemonic,
-          seedHex: deriv.seedHex,
-          xpub: deriv.xpub,
-          addrs: deriv.addrs.map(a => a.address),
-          saldo: total
-        };
-        const blob = new Blob([JSON.stringify(registro, null, 2)], { type: 'application/json' });
-        const a = document.createElement('a');
-        a.href = URL.createObjectURL(blob);
-        a.download = OUTFILE;
-        a.click();
-        log('💾 Wallet COM SALDO salva localmente!');
+  // --------- Consulta saldos (Blockstream) por endereço ----------
+  async function consultaSaldosPorEndereco(addrs){
+    const results = {};
+    for(const item of addrs){
+      const addr = item.address;
+      try{
+        const url = `https://blockstream.info/api/address/${encodeURIComponent(addr)}`;
+        const res = await axiosLib.get(url);
+        const data = res.data;
+        const balance = (data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum) / 1e8;
+        results[addr] = { balance, success: true };
+      }catch(e){
+        results[addr] = { balance: 0, success: false, error: e.message || String(e) };
+        log(`⚠ Erro consulta ${addr}: ${results[addr].error}`);
       }
-
-      // espera entre seeds (reduz chance de bloqueio)
-      await new Promise(r => setTimeout(r, 600));
-    } catch (err) {
-      log('‼️ Erro no loop principal: ' + (err && err.message ? err.message : String(err)));
-      // espera antes de retomar
-      await new Promise(r => setTimeout(r, 1000));
+      enderecosVerificados++;
+      updateCounters();
+      // pequena pausa para evitar rate-limit
+      await new Promise(r => setTimeout(r, 150));
     }
+    return results;
   }
 
-  showSpinner(false);
-  log('=== Busca finalizada ===');
-};
+  // --------- Loop principal ----------
+  startBtn.onclick = async () => {
+    ativo = true;
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    showSpinner(true);
+    log('=== Iniciando busca ===');
 
-stopBtn.onclick = () => {
-  ativo = false;
-  startBtn.disabled = false;
-  stopBtn.disabled = true;
-  showSpinner(false);
-  log('=== Parado pelo usuário ===');
-};
-</script>
+    while(ativo){
+      try{
+        const palavras = Math.random() < 0.5 ? 12 : 24;
+        // geração de mnemonic BIP-39 (128 bits -> 12 palavras; 256 bits -> 24 palavras)
+        const mnemonic = bip39Lib.generateMnemonic(palavras === 12 ? 128 : 256);
+        seedsTestadas++; updateCounters();
+
+        // derivação
+        const deriv = derivaEnderecosComPub(mnemonic, 5);
+
+        // log informativo imediato
+        log(`🔍 Seed (${palavras} palavras): ${mnemonic}`);
+        log(`Seed HEX (BIP-39 seed): ${deriv.seedHex}`);
+        log(`xpub (root neutered): ${deriv.xpub}`);
+        log('Endereços e pubkeys derivados:');
+        deriv.addrs.forEach(a => log(`  [${a.index}] ${a.address}  pub: ${a.pubHex}`));
+
+        // consulta saldos
+        const saldos = await consultaSaldosPorEndereco(deriv.addrs);
+
+        // sumariza resultados
+        let total = 0;
+        log('--- Verificação por endereço ---');
+        deriv.addrs.forEach(a => {
+          const r = saldos[a.address];
+          if(r && r.success){
+            log(`  → ${a.address}  saldo: ${r.balance} BTC`);
+            total += r.balance;
+            if(r.balance > 0) log(`    ✅ >>> Endereço com saldo: ${r.balance} BTC`);
+          } else {
+            log(`  → ${a.address}  (falha na consulta)`);
+          }
+        });
+        log(`Saldo total desta seed: ${total} BTC`);
+        log('----------------------------------');
+
+        if(total > 0){
+          walletsComSaldo++; updateCounters();
+          const registro = { mnemonic, seedHex: deriv.seedHex, xpub: deriv.xpub, addrs: deriv.addrs.map(x=>x.address), saldo: total };
+          const blob = new Blob([JSON.stringify(registro, null, 2)], { type: 'application/json' });
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = OUTFILE;
+          a.click();
+          log('💾 Wallet COM SALDO salva localmente!');
+        }
+
+        // pequena pausa entre seeds para reduzir chance de bloqueio
+        await new Promise(r => setTimeout(r, 600));
+      }catch(err){
+        log('‼ Erro no loop principal: ' + (err && err.message ? err.message : String(err)));
+        await new Promise(r => setTimeout(r, 1000));
+      }
+    }
+
+    showSpinner(false);
+    log('=== Busca finalizada ===');
+  };
+
+  stopBtn.onclick = () => {
+    ativo = false;
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    showSpinner(false);
+    log('=== Parado pelo usuário ===');
+  };
+  </script>
 </body>
 </html>
