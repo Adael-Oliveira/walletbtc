@@ -2,20 +2,23 @@
 <html>
 <head>
   <meta charset="utf-8"/>
-  <title>BIP-44 na nuvem</title>
+  <title>BIP-39 / BIP-44 — Scanner</title>
   <style>
       body {
         font-family: sans-serif;
-        margin: 40px;
-        background: #111;
+        margin: 24px;
+        background: #0b0b0b;
         color: #0f0;
       }
+      h1 { margin-bottom: 8px; }
+      .controls { margin-bottom: 12px; }
       pre {
         overflow: auto;
-        background: #222;
+        background: #151515;
         padding: 12px;
-        height: 400px;
+        height: 420px;
         white-space: pre-wrap;
+        border-radius: 6px;
       }
       button {
         background: #0f0;
@@ -24,6 +27,7 @@
         color: #000;
         font-weight: bold;
         margin-right: 10px;
+        cursor: pointer;
       }
       #status {
         display: inline-block;
@@ -40,21 +44,30 @@
         border-radius: 50%;
         animation: spin 0.8s linear infinite;
         margin-right: 8px;
+        vertical-align: middle;
       }
-      @keyframes spin {
-        from { transform: rotate(0deg); }
-        to { transform: rotate(360deg); }
-      }
+      @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+
+      .stats { margin-top: 8px; color: #9f9; font-size: 14px; }
+      .addr-ok { color: #6f6; }
+      .addr-err { color: #f66; }
   </style>
 </head>
 <body>
-<h1>Busca por Wallets BIP-44 COM SALDO</h1>
-<button id="start">COMEÇAR</button>
-<button id="stop" disabled>PARAR</button>
-<span id="status"></span>
+<h1>Busca por Wallets BIP-39 / BIP-44</h1>
+
+<div class="controls">
+  <button id="start">COMEÇAR</button>
+  <button id="stop" disabled>PARAR</button>
+  <span id="status"></span>
+  <div class="stats" id="counters">
+    Seeds testadas: 0 · Endereços verificados: 0 · Wallets com saldo: 0
+  </div>
+</div>
+
 <pre id="log"></pre>
 
-<!-- bibliotecas -->
+<!-- libs -->
 <script src="https://cdn.jsdelivr.net/npm/axios@1.6.7/dist/axios.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bip39@3.1.0/dist/bip39.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/bitcoinjs-lib@6.1.5/dist/bitcoinjs-lib.min.js"></script>
@@ -62,98 +75,160 @@
 <script>
 /* -------- Config -------- */
 const OUTFILE = 'wallets_com_saldo.json';
+const logElem = document.getElementById('log');
+const startBtn = document.getElementById('start');
+const stopBtn = document.getElementById('stop');
+const statusElem = document.getElementById('status');
+const countersElem = document.getElementById('counters');
 
-/* -------- Derivador BIP44 -------- */
-function derivaEnderecos(mnemonic) {
-  const seed = bip39.mnemonicToSeedSync(mnemonic);
+let ativo = false;
+let seedsTestadas = 0;
+let enderecosVerificados = 0;
+let walletsComSaldo = 0;
+
+function log(txt = '') {
+  logElem.textContent += txt + '\\n';
+  logElem.scrollTop = logElem.scrollHeight;
+}
+function updateCounters() {
+  countersElem.textContent = `Seeds testadas: ${seedsTestadas} · Endereços verificados: ${enderecosVerificados} · Wallets com saldo: ${walletsComSaldo}`;
+}
+function showSpinner(active) {
+  if (active) statusElem.innerHTML = '<span class="spinner"></span>Buscando wallets...';
+  else statusElem.innerHTML = '';
+}
+
+/* -------- Derivador e info extra -------- */
+function derivaEnderecosComPub(mnemonic) {
+  const seed = bip39.mnemonicToSeedSync(mnemonic); // Buffer
   const root = bitcoinjs.bip32.fromSeed(seed, bitcoinjs.networks.bitcoin);
-  const addrs = [];
 
+  // xpub do nó neutered (geralmente m ou m/44'/0'/0' conforme uso)
+  const xpub = root.neutered().toBase58();
+
+  const addrs = [];
   for (let i = 0; i < 5; i++) {
     const child = root.derivePath(`m/44'/0'/0'/0/${i}`);
     const { address } = bitcoinjs.payments.p2pkh({
       pubkey: child.publicKey,
       network: bitcoinjs.networks.bitcoin
     });
-    addrs.push(address);
+    const pubHex = child.publicKey.toString('hex');
+    addrs.push({ index: i, address, pubHex });
   }
 
-  return addrs;
+  return {
+    seedHex: seed.toString('hex'),
+    xpub,
+    addrs
+  };
 }
 
-/* -------- Consulta Saldo -------- */
-async function consultaSaldo(enderecos) {
-  let total = 0;
-  for (const addr of enderecos) {
+/* -------- Consulta por endereço (retorna balance por endereço) -------- */
+async function consultaSaldosPorEndereco(addrs) {
+  const results = {};
+  for (const item of addrs) {
+    const addr = item.address;
     try {
+      // Blockstream API
       const url = `https://blockstream.info/api/address/${addr}`;
       const res = await axios.get(url);
       const data = res.data;
-      const saldo = (data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum) / 1e8;
-      total += saldo;
+      const balance = (data.chain_stats.funded_txo_sum - data.chain_stats.spent_txo_sum) / 1e8;
+      results[addr] = { balance, success: true };
+      enderecosVerificados++;
+      updateCounters();
     } catch (e) {
-      console.warn('Erro ao consultar', addr, e.message);
+      // registra erro mas continua
+      results[addr] = { balance: 0, success: false, error: e.message || String(e) };
+      enderecosVerificados++;
+      updateCounters();
+      log(`⚠️ Erro ao consultar ${addr} : ${e.message || e}`);
     }
+    // pequena pausa para reduzir chance de rate-limit
+    await new Promise(r => setTimeout(r, 150));
   }
-  return total;
+  return results;
 }
 
-/* -------- Interface -------- */
-let ativo = false;
-const logElem = document.getElementById('log');
-const startBtn = document.getElementById('start');
-const stopBtn = document.getElementById('stop');
-const statusElem = document.getElementById('status');
-
-function log(txt) {
-  logElem.textContent += txt + '\n';
-  logElem.scrollTop = logElem.scrollHeight;
-}
-
-function showSpinner(active) {
-  if (active) {
-    statusElem.innerHTML = '<span class="spinner"></span>Buscando wallets...';
-  } else {
-    statusElem.innerHTML = '';
-  }
-}
-
-/* -------- Loop Principal -------- */
+/* -------- Loop principal -------- */
 startBtn.onclick = async () => {
   ativo = true;
   startBtn.disabled = true;
   stopBtn.disabled = false;
-  log('=== Iniciando busca ===');
   showSpinner(true);
+  log('=== Iniciando busca ===');
 
   while (ativo) {
-    const palavras = Math.random() < 0.5 ? 12 : 24;
-    const mnemonic = bip39.generateMnemonic(palavras === 12 ? 128 : 256);
-    const enderecos = derivaEnderecos(mnemonic);
+    try {
+      const palavras = Math.random() < 0.5 ? 12 : 24;
+      const mnemonic = bip39.generateMnemonic(palavras === 12 ? 128 : 256);
 
-    log(`🔍 Testando seed (${palavras} palavras): ${mnemonic}`);
-    log('Endereços derivados:');
-    enderecos.forEach(addr => log('  → ' + addr));
+      // contadores
+      seedsTestadas++;
+      updateCounters();
 
-    const saldo = await consultaSaldo(enderecos);
-    const registro = { mnemonic, enderecos, saldo };
+      // derivação + info
+      const deriv = derivaEnderecosComPub(mnemonic);
 
-    log(`Saldo total: ${saldo} BTC`);
-    log('----------------------------------');
+      // log imediato (sempre deve aparecer)
+      log(`🔍 Seed (${palavras} palavras): ${mnemonic}`);
+      log(`Seed HEX (BIP-39 seed): ${deriv.seedHex}`);
+      log(`xpub (root neutered): ${deriv.xpub}`);
+      log('Endereços e pubkeys derivados:');
+      deriv.addrs.forEach(a => log(`  [${a.index}] ${a.address}  pub: ${a.pubHex}`));
 
-    if (saldo > 0) {
-      const blob = new Blob([JSON.stringify(registro, null, 2)], { type: 'application/json' });
-      const a = document.createElement('a');
-      a.href = URL.createObjectURL(blob);
-      a.download = OUTFILE;
-      a.click();
-      log('💰 Wallet COM SALDO salva localmente!');
+      // consulta saldos por endereço
+      const saldos = await consultaSaldosPorEndereco(deriv.addrs);
+
+      // sumariza e mostra checagem por chave
+      let total = 0;
+      log('--- Verificação por endereço ---');
+      deriv.addrs.forEach(a => {
+        const r = saldos[a.address];
+        if (r && r.success) {
+          const line = `  → ${a.address}  saldo: ${r.balance} BTC`;
+          log(line);
+          total += r.balance;
+          if (r.balance > 0) {
+            log(`    ✅ >>> Endereço com saldo: ${r.balance} BTC`);
+          }
+        } else {
+          log(`  → ${a.address}  (falha consulta)`);
+        }
+      });
+      log(`Saldo total desta seed: ${total} BTC`);
+      log('----------------------------------');
+
+      if (total > 0) {
+        walletsComSaldo++;
+        updateCounters();
+        const registro = {
+          mnemonic,
+          seedHex: deriv.seedHex,
+          xpub: deriv.xpub,
+          addrs: deriv.addrs.map(a => a.address),
+          saldo: total
+        };
+        const blob = new Blob([JSON.stringify(registro, null, 2)], { type: 'application/json' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = OUTFILE;
+        a.click();
+        log('💾 Wallet COM SALDO salva localmente!');
+      }
+
+      // espera entre seeds (reduz chance de bloqueio)
+      await new Promise(r => setTimeout(r, 600));
+    } catch (err) {
+      log('‼️ Erro no loop principal: ' + (err && err.message ? err.message : String(err)));
+      // espera antes de retomar
+      await new Promise(r => setTimeout(r, 1000));
     }
-
-    await new Promise(r => setTimeout(r, 500)); // pausa entre ciclos
   }
 
   showSpinner(false);
+  log('=== Busca finalizada ===');
 };
 
 stopBtn.onclick = () => {
@@ -161,7 +236,7 @@ stopBtn.onclick = () => {
   startBtn.disabled = false;
   stopBtn.disabled = true;
   showSpinner(false);
-  log('=== Parado ===');
+  log('=== Parado pelo usuário ===');
 };
 </script>
 </body>
